@@ -5,6 +5,7 @@
 #include <syslog.h>
 #include <stdio.h>
 #include <arpa/inet.h>
+#include <arpa/inet.h>
 
 struct flows_dump_ctx {
 	struct blob_buf *b;

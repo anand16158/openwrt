@@ -5,6 +5,7 @@
 #include <math.h>
 #include <syslog.h>
 #include <stdio.h>
+#include <stdio.h>
 
 /*
  * Per-client hourly baseline: stores a rolling average (exponential

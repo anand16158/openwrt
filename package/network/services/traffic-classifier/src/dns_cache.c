@@ -5,6 +5,7 @@
 #include <syslog.h>
 #include <arpa/inet.h>
 #include <stdio.h>
+#include <stdio.h>
 
 static uint32_t dns_ip_hash(const struct in6_addr *ip)
 {

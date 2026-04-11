@@ -25,6 +25,9 @@ define Package/luci-app-traffic-classifier/description
   and aggregate traffic classification statistics.
 endef
 
+define Build/Compile
+endef
+
 define Package/luci-app-traffic-classifier/install
 	$(INSTALL_DIR) $(1)/www/luci-static/resources/view/traffic-classifier
 	$(INSTALL_DATA) ./htdocs/luci-static/resources/view/traffic-classifier/overview.js \

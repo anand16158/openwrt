@@ -5,6 +5,7 @@
 #include <strings.h>
 #include <syslog.h>
 #include <stdio.h>
+#include <stdio.h>
 
 struct classifier_ctx {
 	char *model_path;
