@@ -33,6 +33,10 @@ define Package/luci-app-traffic-classifier/install
 		$(1)/www/luci-static/resources/view/traffic-classifier/flows.js
 	$(INSTALL_DATA) ./htdocs/luci-static/resources/view/traffic-classifier/clients.js \
 		$(1)/www/luci-static/resources/view/traffic-classifier/clients.js
+	$(INSTALL_DATA) ./htdocs/luci-static/resources/view/traffic-classifier/anomalies.js \
+		$(1)/www/luci-static/resources/view/traffic-classifier/anomalies.js
+	$(INSTALL_DATA) ./htdocs/luci-static/resources/view/traffic-classifier/settings.js \
+		$(1)/www/luci-static/resources/view/traffic-classifier/settings.js
 
 	$(INSTALL_DIR) $(1)/usr/share/luci/menu.d
 	$(INSTALL_DATA) ./root/usr/share/luci/menu.d/luci-app-traffic-classifier.json \
