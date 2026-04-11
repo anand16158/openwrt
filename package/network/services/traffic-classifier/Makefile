@@ -44,7 +44,7 @@ define Build/Compile
 		$(PKG_BUILD_DIR)/features.c \
 		$(PKG_BUILD_DIR)/classifier.c \
 		$(PKG_BUILD_DIR)/dns_cache.c \
-		$(PKG_BUILD_DIR)/tc_model_stub.c \
+		$(if $(wildcard $(PKG_BUILD_DIR)/tc_model_xgb.c),$(PKG_BUILD_DIR)/tc_model_xgb.c,$(PKG_BUILD_DIR)/tc_model_stub.c) \
 		$(PKG_BUILD_DIR)/qos_manager.c \
 		$(PKG_BUILD_DIR)/telemetry.c \
 		$(PKG_BUILD_DIR)/ubus_api.c \
