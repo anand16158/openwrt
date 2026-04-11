@@ -8,6 +8,7 @@
 struct flows_dump_ctx {
 	struct blob_buf *b;
 	struct sta_tracker *sta;
+	struct device_fp_ctx *devfp;
 };
 
 static int dump_flow_cb(struct flow_entry *entry, void *arg)
@@ -60,6 +61,13 @@ static int dump_flow_cb(struct flow_entry *entry, void *arg)
 		blobmsg_add_u32(b, "signal", (uint32_t)sta->signal);
 	}
 
+	if (ctx->devfp) {
+		const char *devname = device_fp_get_name(ctx->devfp,
+							 entry->src_mac);
+		if (devname)
+			blobmsg_add_string(b, "device_type", devname);
+	}
+
 	blobmsg_close_table(b, flow);
 	return 0;
 }
@@ -74,7 +82,7 @@ static int handle_get_flows(struct ubus_context *ctx, struct ubus_object *obj,
 	blob_buf_init(&b, 0);
 
 	void *arr = blobmsg_open_array(&b, "flows");
-	struct flows_dump_ctx dump_ctx = { .b = &b, .sta = tc->sta };
+	struct flows_dump_ctx dump_ctx = { .b = &b, .sta = tc->sta, .devfp = tc->devfp };
 	flow_table_for_each(tc->ft, dump_flow_cb, &dump_ctx);
 	blobmsg_close_array(&b, arr);
 
@@ -189,6 +197,16 @@ static int handle_get_clients(struct ubus_context *ctx, struct ubus_object *obj,
 			blobmsg_add_string(&b, "ssid", cs->ssid);
 		blobmsg_add_u64(&b, "total_bytes", cs->total_bytes);
 		blobmsg_add_u32(&b, "total_flows", cs->total_flows);
+
+		if (tc->devfp) {
+			const char *devname = device_fp_get_name(
+				tc->devfp, cs->mac);
+			float devconf = device_fp_get_confidence(
+				tc->devfp, cs->mac);
+			blobmsg_add_string(&b, "device_type", devname);
+			blobmsg_add_u32(&b, "device_confidence",
+					(uint32_t)(devconf * 100));
+		}
 
 		void *classes = blobmsg_open_table(&b, "class_usage");
 		for (int c = 0; c < CLASSIFICATION_LABELS; c++) {

@@ -5,6 +5,7 @@
 #include "flow_table.h"
 #include "classifier.h"
 #include "sta_tracker.h"
+#include "device_fingerprint.h"
 
 struct tc_ubus_ctx {
 	struct ubus_context *ubus;
@@ -12,6 +13,7 @@ struct tc_ubus_ctx {
 	struct flow_table *ft;
 	struct classifier_ctx *classifier;
 	struct sta_tracker *sta;
+	struct device_fp_ctx *devfp;
 };
 
 int tc_ubus_init(struct tc_ubus_ctx *ctx);

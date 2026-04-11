@@ -17,6 +17,7 @@
 #include "dns_cache.h"
 #include "qos_manager.h"
 #include "telemetry.h"
+#include "device_fingerprint.h"
 #include "ubus_api.h"
 
 #define DEFAULT_INTERFACE    "br-lan"
@@ -35,6 +36,7 @@ struct tc_daemon {
 	struct dns_cache *dc;
 	struct qos_manager *qos;
 	struct telemetry_ctx *telem;
+	struct device_fp_ctx *devfp;
 	struct tc_ubus_ctx ubus_ctx;
 
 	struct uloop_fd capture_fd;
@@ -57,15 +59,17 @@ static void capture_fd_cb(struct uloop_fd *fd, unsigned int events)
 
 static int classify_flow_cb(struct flow_entry *entry, void *ctx)
 {
-	struct classifier_ctx *cls = (struct classifier_ctx *)ctx;
-	classifier_classify_flow(cls, entry);
+	struct tc_daemon *d = (struct tc_daemon *)ctx;
+	classifier_classify_flow(d->cls, entry);
+	if (d->devfp)
+		device_fp_analyze_flow(d->devfp, entry);
 	return 0;
 }
 
 static void classify_timer_cb(struct uloop_timeout *t)
 {
 	struct tc_daemon *d = container_of(t, struct tc_daemon, classify_timer);
-	flow_table_for_each(d->ft, classify_flow_cb, d->cls);
+	flow_table_for_each(d->ft, classify_flow_cb, d);
 	uloop_timeout_set(t, CLASSIFY_INTERVAL_MS);
 }
 
@@ -187,6 +191,8 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
+	d->devfp = device_fp_init(d->dc);
+
 	d->qos = qos_manager_init(qos_enabled);
 	if (qos_enabled && !d->qos) {
 		syslog(LOG_WARNING, "qos init failed, continuing without QoS");
@@ -200,7 +206,7 @@ int main(int argc, char **argv)
 		};
 		snprintf(tcfg.file_path, sizeof(tcfg.file_path),
 			 "%s", telem_path);
-		d->telem = telemetry_init(&tcfg, d->ft, d->sta, ubus);
+		d->telem = telemetry_init(&tcfg, d->ft, d->sta, d->devfp, ubus);
 		d->telem_interval_ms = telem_interval * 1000;
 	}
 
@@ -208,6 +214,7 @@ int main(int argc, char **argv)
 	d->ubus_ctx.ft = d->ft;
 	d->ubus_ctx.classifier = d->cls;
 	d->ubus_ctx.sta = d->sta;
+	d->ubus_ctx.devfp = d->devfp;
 
 	if (tc_ubus_init(&d->ubus_ctx) != 0) {
 		syslog(LOG_ERR, "failed to register ubus object");
@@ -248,6 +255,7 @@ int main(int argc, char **argv)
 	tc_ubus_cleanup(&d->ubus_ctx);
 	telemetry_destroy(d->telem);
 	qos_manager_destroy(d->qos);
+	device_fp_destroy(d->devfp);
 	capture_destroy(d->cap);
 	classifier_destroy(d->cls);
 	sta_tracker_destroy(d->sta);

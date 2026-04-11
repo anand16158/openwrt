@@ -13,6 +13,7 @@ struct telemetry_ctx {
 	struct telemetry_config cfg;
 	struct flow_table *ft;
 	struct sta_tracker *sta;
+	struct device_fp_ctx *devfp;
 	struct ubus_context *ubus;
 	time_t start_time;
 	uint32_t export_seq;
@@ -21,6 +22,7 @@ struct telemetry_ctx {
 struct telemetry_ctx *telemetry_init(const struct telemetry_config *cfg,
 				     struct flow_table *ft,
 				     struct sta_tracker *sta,
+				     struct device_fp_ctx *devfp,
 				     struct ubus_context *ubus)
 {
 	struct telemetry_ctx *ctx = calloc(1, sizeof(*ctx));
@@ -30,6 +32,7 @@ struct telemetry_ctx *telemetry_init(const struct telemetry_config *cfg,
 	memcpy(&ctx->cfg, cfg, sizeof(*cfg));
 	ctx->ft = ft;
 	ctx->sta = sta;
+	ctx->devfp = devfp;
 	ctx->ubus = ubus;
 	ctx->start_time = time(NULL);
 
@@ -173,6 +176,11 @@ static char *build_json(struct telemetry_ctx *ctx)
 			blobmsg_add_string(&b, "ssid", tc->ssid);
 		blobmsg_add_u64(&b, "total_bytes", tc->total_bytes);
 		blobmsg_add_u32(&b, "total_flows", tc->total_flows);
+
+		if (ctx->devfp) {
+			blobmsg_add_string(&b, "device_type",
+				device_fp_get_name(ctx->devfp, tc->mac));
+		}
 
 		void *usage = blobmsg_open_table(&b, "class_usage");
 		for (int c = 0; c < CLASSIFICATION_LABELS; c++) {

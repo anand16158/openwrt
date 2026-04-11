@@ -5,6 +5,7 @@
 #include "sta_tracker.h"
 #include "classifier.h"
 #include "dns_cache.h"
+#include "device_fingerprint.h"
 
 /*
  * Telemetry: exports classification data as JSON for consumption by
@@ -29,6 +30,7 @@ struct telemetry_config {
 struct telemetry_ctx *telemetry_init(const struct telemetry_config *cfg,
 				     struct flow_table *ft,
 				     struct sta_tracker *sta,
+				     struct device_fp_ctx *devfp,
 				     struct ubus_context *ubus);
 void telemetry_destroy(struct telemetry_ctx *ctx);
 

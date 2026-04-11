@@ -86,6 +86,7 @@ function renderClientsTable(data) {
 
 	var headerRow = E('tr', { 'class': 'tr table-titles' }, [
 		E('th', { 'class': 'th' }, 'MAC Address'),
+		E('th', { 'class': 'th' }, 'Device'),
 		E('th', { 'class': 'th' }, 'SSID'),
 		E('th', { 'class': 'th' }, 'Total Bytes'),
 		E('th', { 'class': 'th' }, 'Flows'),
@@ -111,8 +112,22 @@ function renderClientsTable(data) {
 			}, a.name + ' (' + a.flows + ')'));
 		}
 
+		var devType = c.device_type || 'unknown';
+		var devColors = {
+			'Android': '#3ddc84', 'iPhone/iPad': '#007aff', 'Windows': '#00a4ef',
+			'macOS': '#a2aaad', 'Linux': '#f9a825', 'Smart TV': '#7b1fa2',
+			'IoT': '#ff7043', 'Game Console': '#e53935', 'unknown': '#bdbdbd'
+		};
+		var devColor = devColors[devType] || '#bdbdbd';
+		var deviceBadge = E('span', {
+			'style': 'display:inline-block;padding:2px 8px;border-radius:10px;' +
+				'background:' + devColor + ';color:#fff;font-size:11px;' +
+				'font-weight:bold;white-space:nowrap'
+		}, devType);
+
 		rows.push(E('tr', { 'class': 'tr' }, [
 			E('td', { 'class': 'td', 'style': 'font-family:monospace' }, c.mac || '-'),
+			E('td', { 'class': 'td' }, deviceBadge),
 			E('td', { 'class': 'td' }, c.ssid || '-'),
 			E('td', { 'class': 'td' }, formatBytes(c.total_bytes || 0)),
 			E('td', { 'class': 'td' }, String(c.total_flows || 0)),

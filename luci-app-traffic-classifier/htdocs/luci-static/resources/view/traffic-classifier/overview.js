@@ -16,6 +16,12 @@ var callGetStats = rpc.declare({
 	expect: {}
 });
 
+var callGetClients = rpc.declare({
+	object: 'traffic-classifier',
+	method: 'get_clients',
+	expect: {}
+});
+
 var classColors = {
 	'unknown':  '#9e9e9e',
 	'video':    '#e53935',
@@ -213,17 +219,75 @@ function renderDonutChart(stats) {
 	return container;
 }
 
+var devColors = {
+	'Android': '#3ddc84', 'iPhone/iPad': '#007aff', 'Windows': '#00a4ef',
+	'macOS': '#a2aaad', 'Linux': '#f9a825', 'Smart TV': '#7b1fa2',
+	'IoT': '#ff7043', 'Game Console': '#e53935', 'unknown': '#bdbdbd',
+	'other': '#795548'
+};
+
+function renderDeviceDistribution(clients) {
+	var list = (clients && clients.clients) ? clients.clients : [];
+	var counts = {};
+	var total = 0;
+
+	for (var i = 0; i < list.length; i++) {
+		var dt = list[i].device_type || 'unknown';
+		counts[dt] = (counts[dt] || 0) + 1;
+		total++;
+	}
+
+	if (total === 0)
+		return E('div', { 'class': 'cbi-section' }, [
+			E('h3', {}, 'Device Types'),
+			E('em', {}, 'No clients detected yet.')
+		]);
+
+	var entries = [];
+	for (var name in counts)
+		if (counts.hasOwnProperty(name))
+			entries.push({ name: name, count: counts[name] });
+	entries.sort(function(a, b) { return b.count - a.count; });
+
+	var rows = [];
+	for (var j = 0; j < entries.length; j++) {
+		var e = entries[j];
+		var pct = (e.count / total * 100).toFixed(1);
+		var color = devColors[e.name] || '#757575';
+
+		rows.push(E('div', { 'style': 'margin-bottom:10px' }, [
+			E('div', { 'style': 'display:flex;justify-content:space-between;margin-bottom:3px' }, [
+				E('span', { 'style': 'font-weight:bold' }, e.name),
+				E('span', {}, e.count + ' (' + pct + '%)')
+			]),
+			E('div', { 'style': 'background:#e0e0e0;border-radius:4px;height:20px;overflow:hidden' }, [
+				E('div', {
+					'style': 'background:' + color + ';height:100%;width:' + pct +
+						'%;border-radius:4px;transition:width 0.5s ease'
+				})
+			])
+		]));
+	}
+
+	return E('div', { 'class': 'cbi-section' }, [
+		E('h3', {}, 'Device Types (' + total + ' clients)'),
+		E('div', { 'style': 'padding:8px' }, rows)
+	]);
+}
+
 return view.extend({
 	load: function() {
 		return Promise.all([
 			callStatus(),
-			callGetStats()
+			callGetStats(),
+			callGetClients()
 		]);
 	},
 
 	render: function(data) {
 		var status = data[0] || {};
 		var stats = data[1] || {};
+		var clients = data[2] || {};
 
 		var view = E('div', {}, [
 			E('h2', {}, 'Traffic Classifier'),
@@ -235,13 +299,21 @@ return view.extend({
 					renderDonutChart(stats)
 				])
 			]),
-			renderClassificationBars(stats)
+			E('div', { 'style': 'display:flex;gap:16px;flex-wrap:wrap' }, [
+				E('div', { 'style': 'flex:1;min-width:300px' }, [
+					renderClassificationBars(stats)
+				]),
+				E('div', { 'style': 'flex:1;min-width:300px' }, [
+					renderDeviceDistribution(clients)
+				])
+			])
 		]);
 
 		poll.add(L.bind(function() {
-			return Promise.all([callStatus(), callGetStats()]).then(L.bind(function(res) {
+			return Promise.all([callStatus(), callGetStats(), callGetClients()]).then(L.bind(function(res) {
 				var s = res[0] || {};
 				var st = res[1] || {};
+				var cl = res[2] || {};
 				var root = document.querySelector('[data-page="traffic-classifier-overview"]');
 				if (!root) return;
 
@@ -255,7 +327,14 @@ return view.extend({
 							renderDonutChart(st)
 						])
 					]),
-					renderClassificationBars(st)
+					E('div', { 'style': 'display:flex;gap:16px;flex-wrap:wrap' }, [
+						E('div', { 'style': 'flex:1;min-width:300px' }, [
+							renderClassificationBars(st)
+						]),
+						E('div', { 'style': 'flex:1;min-width:300px' }, [
+							renderDeviceDistribution(cl)
+						])
+					])
 				]);
 			}, this));
 		}, this), 5);
