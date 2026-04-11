@@ -14,6 +14,9 @@
 #include "capture.h"
 #include "classifier.h"
 #include "sta_tracker.h"
+#include "dns_cache.h"
+#include "qos_manager.h"
+#include "telemetry.h"
 #include "ubus_api.h"
 
 #define DEFAULT_INTERFACE    "br-lan"
@@ -22,18 +25,26 @@
 #define CLASSIFY_INTERVAL_MS 5000
 #define EXPIRE_INTERVAL_MS   10000
 #define STA_REFRESH_MS       15000
+#define QOS_UPDATE_MS        10000
 
 struct tc_daemon {
 	struct flow_table *ft;
 	struct capture_ctx *cap;
 	struct classifier_ctx *cls;
 	struct sta_tracker *sta;
+	struct dns_cache *dc;
+	struct qos_manager *qos;
+	struct telemetry_ctx *telem;
 	struct tc_ubus_ctx ubus_ctx;
 
 	struct uloop_fd capture_fd;
 	struct uloop_timeout classify_timer;
 	struct uloop_timeout expire_timer;
 	struct uloop_timeout sta_timer;
+	struct uloop_timeout qos_timer;
+	struct uloop_timeout telem_timer;
+
+	int telem_interval_ms;
 };
 
 static struct tc_daemon daemon_ctx;
@@ -62,6 +73,7 @@ static void expire_timer_cb(struct uloop_timeout *t)
 {
 	struct tc_daemon *d = container_of(t, struct tc_daemon, expire_timer);
 	flow_table_expire(d->ft, time(NULL), FLOW_TIMEOUT_SEC);
+	dns_cache_expire(d->dc, time(NULL));
 	uloop_timeout_set(t, EXPIRE_INTERVAL_MS);
 }
 
@@ -72,6 +84,22 @@ static void sta_timer_cb(struct uloop_timeout *t)
 	uloop_timeout_set(t, STA_REFRESH_MS);
 }
 
+static void qos_timer_cb(struct uloop_timeout *t)
+{
+	struct tc_daemon *d = container_of(t, struct tc_daemon, qos_timer);
+	if (d->qos && qos_manager_enabled(d->qos))
+		qos_manager_update(d->qos, d->ft);
+	uloop_timeout_set(t, QOS_UPDATE_MS);
+}
+
+static void telem_timer_cb(struct uloop_timeout *t)
+{
+	struct tc_daemon *d = container_of(t, struct tc_daemon, telem_timer);
+	if (d->telem && telemetry_enabled(d->telem))
+		telemetry_export(d->telem);
+	uloop_timeout_set(t, d->telem_interval_ms);
+}
+
 static void usage(const char *prog)
 {
 	fprintf(stderr,
@@ -79,6 +107,9 @@ static void usage(const char *prog)
 		"  -i <interface>    Capture interface (default: %s)\n"
 		"  -m <model_path>   ML model file (default: %s)\n"
 		"  -n <max_flows>    Max concurrent flows (default: %d)\n"
+		"  -q                Enable QoS DSCP marking via nftables\n"
+		"  -t <seconds>      Telemetry export interval (0=disabled)\n"
+		"  -T <path>         Telemetry output file path\n"
 		"  -d                Debug mode (foreground, verbose)\n"
 		"  -h                Show this help\n",
 		prog, DEFAULT_INTERFACE, DEFAULT_MODEL_PATH, DEFAULT_MAX_FLOWS);
@@ -88,16 +119,22 @@ int main(int argc, char **argv)
 {
 	const char *ifname = DEFAULT_INTERFACE;
 	const char *model_path = DEFAULT_MODEL_PATH;
+	const char *telem_path = "/tmp/traffic-classifier-telemetry.json";
 	int max_flows = DEFAULT_MAX_FLOWS;
+	int telem_interval = 0;
 	bool debug = false;
+	bool qos_enabled = false;
 	int opt;
 
-	while ((opt = getopt(argc, argv, "i:m:n:dh")) != -1) {
+	while ((opt = getopt(argc, argv, "i:m:n:t:T:dqh")) != -1) {
 		switch (opt) {
 		case 'i': ifname = optarg; break;
 		case 'm': model_path = optarg; break;
 		case 'n': max_flows = atoi(optarg); break;
+		case 't': telem_interval = atoi(optarg); break;
+		case 'T': telem_path = optarg; break;
 		case 'd': debug = true; break;
+		case 'q': qos_enabled = true; break;
 		case 'h':
 		default:
 			usage(argv[0]);
@@ -126,7 +163,13 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	d->cls = classifier_init(model_path);
+	d->dc = dns_cache_create(DNS_MAX_ENTRIES);
+	if (!d->dc) {
+		syslog(LOG_ERR, "failed to create dns cache");
+		return 1;
+	}
+
+	d->cls = classifier_init(model_path, d->dc);
 	if (!d->cls) {
 		syslog(LOG_ERR, "failed to init classifier");
 		return 1;
@@ -138,10 +181,27 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	d->cap = capture_init(ifname, d->ft);
+	d->cap = capture_init(ifname, d->ft, d->dc);
 	if (!d->cap) {
 		syslog(LOG_ERR, "failed to init capture on %s", ifname);
 		return 1;
+	}
+
+	d->qos = qos_manager_init(qos_enabled);
+	if (qos_enabled && !d->qos) {
+		syslog(LOG_WARNING, "qos init failed, continuing without QoS");
+	}
+
+	if (telem_interval > 0) {
+		struct telemetry_config tcfg = {
+			.enabled = true,
+			.interval_sec = telem_interval,
+			.ubus_notify = true,
+		};
+		snprintf(tcfg.file_path, sizeof(tcfg.file_path),
+			 "%s", telem_path);
+		d->telem = telemetry_init(&tcfg, d->ft, d->sta, ubus);
+		d->telem_interval_ms = telem_interval * 1000;
 	}
 
 	d->ubus_ctx.ubus = ubus;
@@ -167,15 +227,31 @@ int main(int argc, char **argv)
 	d->sta_timer.cb = sta_timer_cb;
 	uloop_timeout_set(&d->sta_timer, STA_REFRESH_MS);
 
+	if (d->qos && qos_manager_enabled(d->qos)) {
+		d->qos_timer.cb = qos_timer_cb;
+		uloop_timeout_set(&d->qos_timer, QOS_UPDATE_MS);
+		syslog(LOG_INFO, "qos: DSCP marking enabled");
+	}
+
+	if (d->telem && telemetry_enabled(d->telem)) {
+		d->telem_timer.cb = telem_timer_cb;
+		uloop_timeout_set(&d->telem_timer, d->telem_interval_ms);
+		syslog(LOG_INFO, "telemetry: export every %ds to %s",
+		       telem_interval, telem_path);
+	}
+
 	sta_tracker_refresh(d->sta);
 
 	syslog(LOG_INFO, "daemon ready, entering main loop");
 	uloop_run();
 
 	tc_ubus_cleanup(&d->ubus_ctx);
+	telemetry_destroy(d->telem);
+	qos_manager_destroy(d->qos);
 	capture_destroy(d->cap);
 	classifier_destroy(d->cls);
 	sta_tracker_destroy(d->sta);
+	dns_cache_destroy(d->dc);
 	flow_table_destroy(d->ft);
 	ubus_free(ubus);
 	uloop_done();

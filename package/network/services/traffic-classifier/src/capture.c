@@ -13,12 +13,13 @@
 #include <netinet/udp.h>
 #include <pcap/pcap.h>
 
-#define SNAP_LEN        128
+#define SNAP_LEN        256
 #define PCAP_TIMEOUT_MS 100
 
 struct capture_ctx {
 	pcap_t *pcap;
 	struct flow_table *ft;
+	struct dns_cache *dc;
 	char ifname[32];
 	int fd;
 };
@@ -30,7 +31,8 @@ static int64_t usec_now(void)
 	return (int64_t)tv.tv_sec * 1000000 + tv.tv_usec;
 }
 
-struct capture_ctx *capture_init(const char *ifname, struct flow_table *ft)
+struct capture_ctx *capture_init(const char *ifname, struct flow_table *ft,
+				 struct dns_cache *dc)
 {
 	char errbuf[PCAP_ERRBUF_SIZE];
 
@@ -39,6 +41,7 @@ struct capture_ctx *capture_init(const char *ifname, struct flow_table *ft)
 		return NULL;
 
 	ctx->ft = ft;
+	ctx->dc = dc;
 	snprintf(ctx->ifname, sizeof(ctx->ifname), "%s", ifname);
 
 	ctx->pcap = pcap_open_live(ifname, SNAP_LEN, 1, PCAP_TIMEOUT_MS, errbuf);
@@ -83,6 +86,18 @@ int capture_get_fd(struct capture_ctx *ctx)
 	return ctx->fd;
 }
 
+static void annotate_dns_hint(struct capture_ctx *ctx, struct flow_entry *e)
+{
+	if (e->dns_hint[0] || !ctx->dc)
+		return;
+
+	const char *name = dns_cache_lookup(ctx->dc, &e->key.dst_ip);
+	if (!name)
+		name = dns_cache_lookup(ctx->dc, &e->key.src_ip);
+	if (name)
+		snprintf(e->dns_hint, sizeof(e->dns_hint), "%s", name);
+}
+
 static void process_packet(struct capture_ctx *ctx,
 			   const uint8_t *pkt, uint32_t len,
 			   int64_t ts_usec)
@@ -93,6 +108,9 @@ static void process_packet(struct capture_ctx *ctx,
 	uint16_t l3_len;
 	uint16_t pkt_payload_len = 0;
 	uint8_t tcp_flags = 0;
+	uint16_t l4_src_port = 0, l4_dst_port = 0;
+	const uint8_t *l4 = NULL;
+	uint16_t l4_len = 0;
 
 	memset(&key, 0, sizeof(key));
 
@@ -130,18 +148,22 @@ static void process_packet(struct capture_ctx *ctx,
 		key.proto = iph->protocol;
 		pkt_payload_len = ntohs(iph->tot_len);
 
-		const uint8_t *l4 = l3 + iph_len;
-		uint16_t l4_len = l3_len - iph_len;
+		l4 = l3 + iph_len;
+		l4_len = l3_len - iph_len;
 
 		if (key.proto == IPPROTO_TCP && l4_len >= sizeof(struct tcphdr)) {
 			const struct tcphdr *th = (const struct tcphdr *)l4;
 			key.src_port = ntohs(th->source);
 			key.dst_port = ntohs(th->dest);
 			tcp_flags = ((uint8_t *)th)[13];
+			l4_src_port = key.src_port;
+			l4_dst_port = key.dst_port;
 		} else if (key.proto == IPPROTO_UDP && l4_len >= sizeof(struct udphdr)) {
 			const struct udphdr *uh = (const struct udphdr *)l4;
 			key.src_port = ntohs(uh->source);
 			key.dst_port = ntohs(uh->dest);
+			l4_src_port = key.src_port;
+			l4_dst_port = key.dst_port;
 		}
 
 	} else if (etype == ETHERTYPE_IPV6) {
@@ -156,21 +178,34 @@ static void process_packet(struct capture_ctx *ctx,
 		key.proto = ip6->ip6_nxt;
 		pkt_payload_len = ntohs(ip6->ip6_plen) + sizeof(struct ip6_hdr);
 
-		const uint8_t *l4 = l3 + sizeof(struct ip6_hdr);
-		uint16_t l4_len = l3_len - sizeof(struct ip6_hdr);
+		l4 = l3 + sizeof(struct ip6_hdr);
+		l4_len = l3_len - sizeof(struct ip6_hdr);
 
 		if (key.proto == IPPROTO_TCP && l4_len >= sizeof(struct tcphdr)) {
 			const struct tcphdr *th = (const struct tcphdr *)l4;
 			key.src_port = ntohs(th->source);
 			key.dst_port = ntohs(th->dest);
 			tcp_flags = ((uint8_t *)th)[13];
+			l4_src_port = key.src_port;
+			l4_dst_port = key.dst_port;
 		} else if (key.proto == IPPROTO_UDP && l4_len >= sizeof(struct udphdr)) {
 			const struct udphdr *uh = (const struct udphdr *)l4;
 			key.src_port = ntohs(uh->source);
 			key.dst_port = ntohs(uh->dest);
+			l4_src_port = key.src_port;
+			l4_dst_port = key.dst_port;
 		}
 	} else {
 		return;
+	}
+
+	/* Feed DNS responses into the cache */
+	if (ctx->dc && key.proto == IPPROTO_UDP &&
+	    (l4_src_port == 53 || l4_dst_port == 53) &&
+	    l4 && l4_len > sizeof(struct udphdr)) {
+		const uint8_t *dns_data = l4 + sizeof(struct udphdr);
+		uint16_t dns_len = l4_len - sizeof(struct udphdr);
+		dns_cache_parse_response(ctx->dc, dns_data, dns_len);
 	}
 
 	struct flow_entry *e = flow_table_lookup(ctx->ft, &key);
@@ -180,6 +215,8 @@ static void process_packet(struct capture_ctx *ctx,
 			return;
 		e->stats.first_pkt_usec = ts_usec;
 	}
+
+	annotate_dns_hint(ctx, e);
 
 	struct flow_stats *s = &e->stats;
 	e->last_seen = time(NULL);

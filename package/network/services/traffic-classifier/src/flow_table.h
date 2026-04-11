@@ -88,6 +88,7 @@ struct flow_entry {
 	float confidence;
 
 	uint8_t src_mac[6];
+	char dns_hint[64];
 	time_t created;
 	time_t last_seen;
 

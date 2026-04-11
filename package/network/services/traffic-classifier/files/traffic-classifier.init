@@ -7,18 +7,31 @@ USE_PROCD=1
 PROG=/usr/sbin/traffic-classifier
 
 start_service() {
-	local interface model max_flows
+	local interface model max_flows qos_enabled
+	local telemetry_enabled telemetry_interval telemetry_path
 
 	config_load traffic-classifier
 	config_get interface daemon interface 'br-lan'
 	config_get model daemon model '/etc/traffic-classifier/model.json'
 	config_get max_flows daemon max_flows '8192'
+	config_get qos_enabled daemon qos_enabled '0'
+	config_get telemetry_enabled daemon telemetry_enabled '0'
+	config_get telemetry_interval daemon telemetry_interval '60'
+	config_get telemetry_path daemon telemetry_path '/tmp/traffic-classifier-telemetry.json'
 
 	procd_open_instance
 	procd_set_param command "$PROG" \
 		-i "$interface" \
 		-m "$model" \
 		-n "$max_flows"
+
+	[ "$qos_enabled" = "1" ] && procd_append_param command -q
+
+	[ "$telemetry_enabled" = "1" ] && {
+		procd_append_param command -t "$telemetry_interval"
+		procd_append_param command -T "$telemetry_path"
+	}
+
 	procd_set_param respawn
 	procd_set_param stdout 1
 	procd_set_param stderr 1

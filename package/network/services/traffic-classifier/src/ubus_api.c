@@ -48,6 +48,9 @@ static int dump_flow_cb(struct flow_entry *entry, void *arg)
 		 entry->src_mac[3], entry->src_mac[4], entry->src_mac[5]);
 	blobmsg_add_string(b, "src_mac", mac_str);
 
+	if (entry->dns_hint[0])
+		blobmsg_add_string(b, "domain", entry->dns_hint);
+
 	const struct sta_entry *sta = sta_tracker_find_mac(ctx->sta, entry->src_mac);
 	if (sta) {
 		blobmsg_add_string(b, "ssid", sta->ssid);
