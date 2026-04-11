@@ -50,6 +50,8 @@ static int dump_flow_cb(struct flow_entry *entry, void *arg)
 
 	if (entry->dns_hint[0])
 		blobmsg_add_string(b, "domain", entry->dns_hint);
+	if (entry->app_name[0])
+		blobmsg_add_string(b, "app", entry->app_name);
 
 	const struct sta_entry *sta = sta_tracker_find_mac(ctx->sta, entry->src_mac);
 	if (sta) {
@@ -83,12 +85,22 @@ static int handle_get_flows(struct ubus_context *ctx, struct ubus_object *obj,
 	return UBUS_STATUS_OK;
 }
 
+#define MAX_APPS_PER_CLIENT 16
+
+struct app_counter {
+	char name[32];
+	uint32_t flows;
+	uint64_t bytes;
+};
+
 struct client_summary {
 	uint8_t mac[6];
 	char ssid[MAX_SSID_LEN];
 	uint32_t class_counts[CLASSIFICATION_LABELS];
 	uint64_t total_bytes;
 	uint32_t total_flows;
+	struct app_counter apps[MAX_APPS_PER_CLIENT];
+	int app_count;
 };
 
 struct client_agg_ctx {
@@ -121,10 +133,32 @@ static int agg_flow_cb(struct flow_entry *entry, void *arg)
 	}
 
 	struct client_summary *cs = &ctx->clients[idx];
+	uint64_t flow_bytes = entry->stats.total_bytes_fwd +
+			      entry->stats.total_bytes_bwd;
+
 	if (entry->classification < CLASSIFICATION_LABELS)
 		cs->class_counts[entry->classification]++;
-	cs->total_bytes += entry->stats.total_bytes_fwd + entry->stats.total_bytes_bwd;
+	cs->total_bytes += flow_bytes;
 	cs->total_flows++;
+
+	if (entry->app_name[0]) {
+		int ai = -1;
+		for (int j = 0; j < cs->app_count; j++) {
+			if (strcmp(cs->apps[j].name, entry->app_name) == 0) {
+				ai = j;
+				break;
+			}
+		}
+		if (ai < 0 && cs->app_count < MAX_APPS_PER_CLIENT) {
+			ai = cs->app_count++;
+			snprintf(cs->apps[ai].name, sizeof(cs->apps[ai].name),
+				 "%s", entry->app_name);
+		}
+		if (ai >= 0) {
+			cs->apps[ai].flows++;
+			cs->apps[ai].bytes += flow_bytes;
+		}
+	}
 
 	return 0;
 }
@@ -156,13 +190,29 @@ static int handle_get_clients(struct ubus_context *ctx, struct ubus_object *obj,
 		blobmsg_add_u64(&b, "total_bytes", cs->total_bytes);
 		blobmsg_add_u32(&b, "total_flows", cs->total_flows);
 
-		void *classes = blobmsg_open_table(&b, "app_usage");
+		void *classes = blobmsg_open_table(&b, "class_usage");
 		for (int c = 0; c < CLASSIFICATION_LABELS; c++) {
 			if (cs->class_counts[c] > 0)
 				blobmsg_add_u32(&b, traffic_class_names[c],
 						cs->class_counts[c]);
 		}
 		blobmsg_close_table(&b, classes);
+
+		if (cs->app_count > 0) {
+			void *apps = blobmsg_open_array(&b, "apps");
+			for (int a = 0; a < cs->app_count; a++) {
+				void *app = blobmsg_open_table(&b, NULL);
+				blobmsg_add_string(&b, "name",
+						   cs->apps[a].name);
+				blobmsg_add_u32(&b, "flows",
+						cs->apps[a].flows);
+				blobmsg_add_u64(&b, "bytes",
+						cs->apps[a].bytes);
+				blobmsg_close_table(&b, app);
+			}
+			blobmsg_close_array(&b, apps);
+		}
+
 		blobmsg_close_table(&b, client);
 	}
 

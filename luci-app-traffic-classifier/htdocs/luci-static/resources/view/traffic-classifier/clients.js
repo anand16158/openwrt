@@ -89,19 +89,37 @@ function renderClientsTable(data) {
 		E('th', { 'class': 'th' }, 'SSID'),
 		E('th', { 'class': 'th' }, 'Total Bytes'),
 		E('th', { 'class': 'th' }, 'Flows'),
-		E('th', { 'class': 'th', 'style': 'min-width:250px' }, 'Application Usage')
+		E('th', { 'class': 'th', 'style': 'min-width:200px' }, 'Traffic Mix'),
+		E('th', { 'class': 'th', 'style': 'min-width:200px' }, 'Apps Detected')
 	]);
 
 	var rows = [headerRow];
 
 	for (var i = 0; i < clients.length; i++) {
 		var c = clients[i];
+		var classUsage = c.class_usage || c.app_usage || {};
+		var apps = c.apps || [];
+
+		var appTags = [];
+		apps.sort(function(a, b) { return (b.bytes || 0) - (a.bytes || 0); });
+		for (var j = 0; j < apps.length; j++) {
+			var a = apps[j];
+			appTags.push(E('span', {
+				'style': 'display:inline-block;padding:1px 6px;margin:2px;' +
+					'border-radius:8px;background:#e3f2fd;color:#1565c0;' +
+					'font-size:11px;font-weight:bold;white-space:nowrap'
+			}, a.name + ' (' + a.flows + ')'));
+		}
+
 		rows.push(E('tr', { 'class': 'tr' }, [
 			E('td', { 'class': 'td', 'style': 'font-family:monospace' }, c.mac || '-'),
 			E('td', { 'class': 'td' }, c.ssid || '-'),
 			E('td', { 'class': 'td' }, formatBytes(c.total_bytes || 0)),
 			E('td', { 'class': 'td' }, String(c.total_flows || 0)),
-			E('td', { 'class': 'td' }, renderAppBar(c.app_usage || {}))
+			E('td', { 'class': 'td' }, renderAppBar(classUsage)),
+			E('td', { 'class': 'td' }, appTags.length > 0 ?
+				E('div', { 'style': 'display:flex;flex-wrap:wrap' }, appTags) :
+				E('em', { 'style': 'color:#999' }, 'detecting...'))
 		]));
 	}
 

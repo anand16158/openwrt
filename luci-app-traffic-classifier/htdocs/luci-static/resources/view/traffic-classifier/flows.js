@@ -62,6 +62,7 @@ function renderFlowsTable(data) {
 
 	var headerRow = E('tr', { 'class': 'tr table-titles' }, [
 		E('th', { 'class': 'th' }, 'Class'),
+		E('th', { 'class': 'th' }, 'App'),
 		E('th', { 'class': 'th' }, 'Source'),
 		E('th', { 'class': 'th' }, 'Destination'),
 		E('th', { 'class': 'th' }, 'Proto'),
@@ -83,8 +84,11 @@ function renderFlowsTable(data) {
 		if (f.ssid)
 			clientInfo += ' (' + f.ssid + ')';
 
+		var appLabel = f.app || (f.domain || '-');
+
 		rows.push(E('tr', { 'class': 'tr' }, [
 			E('td', { 'class': 'td' }, renderClassBadge(f.class || 'unknown', f.confidence)),
+			E('td', { 'class': 'td', 'style': 'font-weight:bold;font-size:12px' }, appLabel),
 			E('td', { 'class': 'td', 'style': 'font-family:monospace;font-size:12px' }, src),
 			E('td', { 'class': 'td', 'style': 'font-family:monospace;font-size:12px' }, dst),
 			E('td', { 'class': 'td' }, protoName(f.proto)),

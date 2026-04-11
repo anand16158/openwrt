@@ -45,12 +45,22 @@ void telemetry_destroy(struct telemetry_ctx *ctx)
 
 /* Per-client aggregation for telemetry */
 
+#define TELEM_MAX_APPS 16
+
+struct telem_app {
+	char name[32];
+	uint32_t flows;
+	uint64_t bytes;
+};
+
 struct telem_client {
 	uint8_t mac[6];
 	char ssid[MAX_SSID_LEN];
 	uint64_t total_bytes;
 	uint32_t total_flows;
 	uint32_t class_counts[CLASSIFICATION_LABELS];
+	struct telem_app apps[TELEM_MAX_APPS];
+	int app_count;
 };
 
 struct telem_agg {
@@ -97,6 +107,25 @@ static int telem_flow_cb(struct flow_entry *entry, void *arg)
 	c->total_flows++;
 	if (entry->classification < CLASSIFICATION_LABELS)
 		c->class_counts[entry->classification]++;
+
+	if (entry->app_name[0]) {
+		int ai = -1;
+		for (int j = 0; j < c->app_count; j++) {
+			if (strcmp(c->apps[j].name, entry->app_name) == 0) {
+				ai = j;
+				break;
+			}
+		}
+		if (ai < 0 && c->app_count < TELEM_MAX_APPS) {
+			ai = c->app_count++;
+			snprintf(c->apps[ai].name, sizeof(c->apps[ai].name),
+				 "%s", entry->app_name);
+		}
+		if (ai >= 0) {
+			c->apps[ai].flows++;
+			c->apps[ai].bytes += bytes;
+		}
+	}
 
 	return 0;
 }
@@ -145,13 +174,29 @@ static char *build_json(struct telemetry_ctx *ctx)
 		blobmsg_add_u64(&b, "total_bytes", tc->total_bytes);
 		blobmsg_add_u32(&b, "total_flows", tc->total_flows);
 
-		void *usage = blobmsg_open_table(&b, "app_usage");
+		void *usage = blobmsg_open_table(&b, "class_usage");
 		for (int c = 0; c < CLASSIFICATION_LABELS; c++) {
 			if (tc->class_counts[c] > 0)
 				blobmsg_add_u32(&b, traffic_class_names[c],
 						tc->class_counts[c]);
 		}
 		blobmsg_close_table(&b, usage);
+
+		if (tc->app_count > 0) {
+			void *apps = blobmsg_open_array(&b, "apps");
+			for (int a = 0; a < tc->app_count; a++) {
+				void *app = blobmsg_open_table(&b, NULL);
+				blobmsg_add_string(&b, "name",
+						   tc->apps[a].name);
+				blobmsg_add_u32(&b, "flows",
+						tc->apps[a].flows);
+				blobmsg_add_u64(&b, "bytes",
+						tc->apps[a].bytes);
+				blobmsg_close_table(&b, app);
+			}
+			blobmsg_close_array(&b, apps);
+		}
+
 		blobmsg_close_table(&b, client);
 	}
 	blobmsg_close_array(&b, arr);
