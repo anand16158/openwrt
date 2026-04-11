@@ -19,6 +19,7 @@
 #include "telemetry.h"
 #include "device_fingerprint.h"
 #include "usage_profile.h"
+#include "data_collect.h"
 #include "ubus_api.h"
 
 #define DEFAULT_INTERFACE    "br-lan"
@@ -40,6 +41,7 @@ struct tc_daemon {
 	struct telemetry_ctx *telem;
 	struct device_fp_ctx *devfp;
 	struct usage_profile_ctx *profiler;
+	struct data_collect_ctx *collector;
 	struct tc_ubus_ctx ubus_ctx;
 
 	struct uloop_fd capture_fd;
@@ -69,6 +71,8 @@ static int classify_flow_cb(struct flow_entry *entry, void *ctx)
 		device_fp_analyze_flow(d->devfp, entry);
 	if (d->profiler)
 		usage_profile_update(d->profiler, entry);
+	if (d->collector)
+		data_collect_record(d->collector, entry);
 	return 0;
 }
 
@@ -128,6 +132,7 @@ static void usage(const char *prog)
 		"  -q                Enable QoS DSCP marking via nftables\n"
 		"  -t <seconds>      Telemetry export interval (0=disabled)\n"
 		"  -T <path>         Telemetry output file path\n"
+		"  -C <path>         Enable data capture for ML retraining\n"
 		"  -d                Debug mode (foreground, verbose)\n"
 		"  -h                Show this help\n",
 		prog, DEFAULT_INTERFACE, DEFAULT_MODEL_PATH, DEFAULT_MAX_FLOWS);
@@ -138,19 +143,21 @@ int main(int argc, char **argv)
 	const char *ifname = DEFAULT_INTERFACE;
 	const char *model_path = DEFAULT_MODEL_PATH;
 	const char *telem_path = "/tmp/traffic-classifier-telemetry.json";
+	const char *capture_path = NULL;
 	int max_flows = DEFAULT_MAX_FLOWS;
 	int telem_interval = 0;
 	bool debug = false;
 	bool qos_enabled = false;
 	int opt;
 
-	while ((opt = getopt(argc, argv, "i:m:n:t:T:dqh")) != -1) {
+	while ((opt = getopt(argc, argv, "i:m:n:t:T:C:dqh")) != -1) {
 		switch (opt) {
 		case 'i': ifname = optarg; break;
 		case 'm': model_path = optarg; break;
 		case 'n': max_flows = atoi(optarg); break;
 		case 't': telem_interval = atoi(optarg); break;
 		case 'T': telem_path = optarg; break;
+		case 'C': capture_path = optarg; break;
 		case 'd': debug = true; break;
 		case 'q': qos_enabled = true; break;
 		case 'h':
@@ -208,6 +215,9 @@ int main(int argc, char **argv)
 	d->devfp = device_fp_init(d->dc);
 	d->profiler = usage_profile_init();
 
+	if (capture_path)
+		d->collector = data_collect_init(capture_path);
+
 	d->qos = qos_manager_init(qos_enabled);
 	if (qos_enabled && !d->qos) {
 		syslog(LOG_WARNING, "qos init failed, continuing without QoS");
@@ -232,6 +242,7 @@ int main(int argc, char **argv)
 	d->ubus_ctx.sta = d->sta;
 	d->ubus_ctx.devfp = d->devfp;
 	d->ubus_ctx.profiler = d->profiler;
+	d->ubus_ctx.collector = d->collector;
 
 	if (tc_ubus_init(&d->ubus_ctx) != 0) {
 		syslog(LOG_ERR, "failed to register ubus object");
@@ -271,6 +282,11 @@ int main(int argc, char **argv)
 		       PROFILE_TICK_MS / 1000);
 	}
 
+	if (d->collector) {
+		syslog(LOG_INFO, "data_collect: capturing training data to %s",
+		       data_collect_path(d->collector));
+	}
+
 	sta_tracker_refresh(d->sta);
 
 	syslog(LOG_INFO, "daemon ready, entering main loop");
@@ -279,6 +295,7 @@ int main(int argc, char **argv)
 	tc_ubus_cleanup(&d->ubus_ctx);
 	telemetry_destroy(d->telem);
 	qos_manager_destroy(d->qos);
+	data_collect_destroy(d->collector);
 	usage_profile_destroy(d->profiler);
 	device_fp_destroy(d->devfp);
 	capture_destroy(d->cap);

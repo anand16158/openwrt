@@ -394,12 +394,95 @@ static int handle_get_profiles(struct ubus_context *ctx,
 	return UBUS_STATUS_OK;
 }
 
+static int handle_capture_status(struct ubus_context *ctx,
+				 struct ubus_object *obj,
+				 struct ubus_request_data *req,
+				 const char *method,
+				 struct blob_attr *msg)
+{
+	struct tc_ubus_ctx *tc = container_of(obj, struct tc_ubus_ctx, obj);
+	struct blob_buf b = {};
+
+	blob_buf_init(&b, 0);
+
+	if (tc->collector) {
+		blobmsg_add_u8(&b, "available", true);
+		blobmsg_add_u8(&b, "active",
+			       data_collect_is_active(tc->collector));
+		blobmsg_add_u32(&b, "rows",
+				data_collect_row_count(tc->collector));
+		blobmsg_add_u32(&b, "max_rows", DATA_COLLECT_MAX_ROWS);
+		blobmsg_add_string(&b, "path",
+				   data_collect_path(tc->collector));
+	} else {
+		blobmsg_add_u8(&b, "available", false);
+	}
+
+	ubus_send_reply(ctx, req, b.head);
+	blob_buf_free(&b);
+	return UBUS_STATUS_OK;
+}
+
+static int handle_capture_start(struct ubus_context *ctx,
+				struct ubus_object *obj,
+				struct ubus_request_data *req,
+				const char *method,
+				struct blob_attr *msg)
+{
+	struct tc_ubus_ctx *tc = container_of(obj, struct tc_ubus_ctx, obj);
+	struct blob_buf b = {};
+
+	if (!tc->collector) {
+		blob_buf_init(&b, 0);
+		blobmsg_add_string(&b, "error",
+				   "data capture not configured (-C flag)");
+		ubus_send_reply(ctx, req, b.head);
+		blob_buf_free(&b);
+		return UBUS_STATUS_OK;
+	}
+
+	data_collect_start(tc->collector);
+
+	blob_buf_init(&b, 0);
+	blobmsg_add_u8(&b, "active", true);
+	blobmsg_add_u32(&b, "rows",
+			data_collect_row_count(tc->collector));
+	ubus_send_reply(ctx, req, b.head);
+	blob_buf_free(&b);
+	return UBUS_STATUS_OK;
+}
+
+static int handle_capture_stop(struct ubus_context *ctx,
+			       struct ubus_object *obj,
+			       struct ubus_request_data *req,
+			       const char *method,
+			       struct blob_attr *msg)
+{
+	struct tc_ubus_ctx *tc = container_of(obj, struct tc_ubus_ctx, obj);
+	struct blob_buf b = {};
+
+	if (tc->collector)
+		data_collect_stop(tc->collector);
+
+	blob_buf_init(&b, 0);
+	blobmsg_add_u8(&b, "active", false);
+	blobmsg_add_u32(&b, "rows",
+			tc->collector ?
+			data_collect_row_count(tc->collector) : 0);
+	ubus_send_reply(ctx, req, b.head);
+	blob_buf_free(&b);
+	return UBUS_STATUS_OK;
+}
+
 static const struct ubus_method tc_methods[] = {
 	UBUS_METHOD_NOARG("get_flows", handle_get_flows),
 	UBUS_METHOD_NOARG("get_clients", handle_get_clients),
 	UBUS_METHOD_NOARG("get_stats", handle_get_stats),
 	UBUS_METHOD_NOARG("get_anomalies", handle_get_anomalies),
 	UBUS_METHOD_NOARG("get_profiles", handle_get_profiles),
+	UBUS_METHOD_NOARG("capture_status", handle_capture_status),
+	UBUS_METHOD_NOARG("capture_start", handle_capture_start),
+	UBUS_METHOD_NOARG("capture_stop", handle_capture_stop),
 	UBUS_METHOD_NOARG("status", handle_status),
 };
 

@@ -9,12 +9,21 @@ The generated C file implements the tc_model.h interface:
 Usage:
     cd training/
     pip install -r requirements.txt
+
+    # Train on synthetic data (default):
     python build_model.py
+
+    # Train on real data captured from the router:
+    python build_model.py --input real_data.csv
+
+    # Combine real + synthetic data:
+    python build_model.py --input real_data.csv --augment
 
     # The script writes tc_model_xgb.c into ../package/.../src/
     # which replaces tc_model_stub.c at link time.
 """
 
+import argparse
 import csv
 import json
 import math
@@ -354,16 +363,73 @@ def export_to_c(model, output_path):
     print(f"  Implements: tc_model_predict(), tc_model_available()")
 
 
+# ── Load real data from CSV ───────────────────────────────────────────
+
+def load_real_data(csv_path):
+    """Load training data exported by the data_collect module."""
+    print(f"  Loading real data from {csv_path}...")
+    X_list, y_list = [], []
+    skipped = 0
+
+    with open(csv_path, "r") as f:
+        reader = csv.reader(f)
+        header = next(reader)
+
+        for row in reader:
+            if len(row) < N_FEATURES + 1:
+                skipped += 1
+                continue
+            try:
+                features = [float(row[i]) for i in range(N_FEATURES)]
+                label = int(row[N_FEATURES])
+                if 0 <= label < N_CLASSES:
+                    X_list.append(features)
+                    y_list.append(label)
+                else:
+                    skipped += 1
+            except (ValueError, IndexError):
+                skipped += 1
+
+    X = np.array(X_list, dtype=np.float32)
+    y = np.array(y_list, dtype=np.int32)
+    print(f"  Loaded {len(X)} rows ({skipped} skipped)")
+    return X, y
+
+
 # ── Main ─────────────────────────────────────────────────────────────
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="Train XGBoost traffic classifier and export to C")
+    parser.add_argument("--input", "-i", type=str, default=None,
+                        help="Path to real training data CSV "
+                             "(exported by the router's data_collect module)")
+    parser.add_argument("--augment", "-a", action="store_true",
+                        help="When using --input, also add synthetic data "
+                             "to fill gaps in under-represented classes")
+    parser.add_argument("--samples", "-n", type=int, default=10000,
+                        help="Number of synthetic samples (default: 10000)")
+    args = parser.parse_args()
+
     print("=" * 60)
     print("  Traffic Classifier — ML Model Builder")
     print("=" * 60)
 
-    n_samples = 10000
-    print(f"\n[1/3] Generating {n_samples} synthetic training flows...")
-    X, y = generate_data(n_samples)
+    if args.input:
+        print(f"\n[1/3] Loading real training data...")
+        X, y = load_real_data(args.input)
+
+        if args.augment:
+            print(f"\n  Augmenting with {args.samples} synthetic flows...")
+            X_synth, y_synth = generate_data(args.samples)
+            X = np.vstack([X, X_synth])
+            y = np.concatenate([y, y_synth])
+            print(f"  Combined dataset: {len(X)} flows")
+    else:
+        n_samples = args.samples
+        print(f"\n[1/3] Generating {n_samples} synthetic training flows...")
+        X, y = generate_data(n_samples)
+
     unique, counts = np.unique(y, return_counts=True)
     for cls_id, count in zip(unique, counts):
         name = CLASS_NAMES[cls_id] if cls_id < len(CLASS_NAMES) else f"c{cls_id}"
@@ -384,8 +450,9 @@ def main():
     export_to_c(model, c_output)
 
     print(f"\n{'='*60}")
-    print("  Done! Next: update Makefile to use tc_model_xgb.c")
-    print(f"  instead of tc_model_stub.c, then rebuild.")
+    print("  Done! The model has been exported to tc_model_xgb.c")
+    if args.input:
+        print(f"  Trained on: {len(X)} real+synthetic flows")
     print(f"{'='*60}")
 
 

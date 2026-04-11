@@ -41,5 +41,13 @@
 			"type": "view",
 			"path": "traffic-classifier/anomalies"
 		}
+	},
+	"admin/network/traffic-classifier/settings": {
+		"title": "Settings",
+		"order": 5,
+		"action": {
+			"type": "view",
+			"path": "traffic-classifier/settings"
+		}
 	}
 }
