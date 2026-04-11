@@ -298,10 +298,108 @@ static int handle_status(struct ubus_context *ctx, struct ubus_object *obj,
 	return UBUS_STATUS_OK;
 }
 
+static int handle_get_anomalies(struct ubus_context *ctx,
+				struct ubus_object *obj,
+				struct ubus_request_data *req,
+				const char *method,
+				struct blob_attr *msg)
+{
+	struct tc_ubus_ctx *tc = container_of(obj, struct tc_ubus_ctx, obj);
+	struct blob_buf b = {};
+
+	blob_buf_init(&b, 0);
+
+	int total = usage_profile_anomaly_count(tc->profiler);
+	blobmsg_add_u32(&b, "total", total);
+
+	struct anomaly_event events[ANOMALY_RING_SIZE];
+	int count = usage_profile_get_anomalies(tc->profiler, events,
+						ANOMALY_RING_SIZE);
+
+	void *arr = blobmsg_open_array(&b, "anomalies");
+	for (int i = 0; i < count; i++) {
+		struct anomaly_event *ev = &events[i];
+		char mac_str[18];
+		snprintf(mac_str, sizeof(mac_str),
+			 "%02x:%02x:%02x:%02x:%02x:%02x",
+			 ev->mac[0], ev->mac[1], ev->mac[2],
+			 ev->mac[3], ev->mac[4], ev->mac[5]);
+
+		void *entry = blobmsg_open_table(&b, NULL);
+		blobmsg_add_string(&b, "mac", mac_str);
+		blobmsg_add_string(&b, "type",
+				   anomaly_type_names[ev->type]);
+		blobmsg_add_u64(&b, "timestamp",
+				(uint64_t)ev->timestamp);
+		blobmsg_add_string(&b, "detail", ev->detail);
+		blobmsg_add_u32(&b, "severity",
+				(uint32_t)(ev->severity * 100));
+		blobmsg_close_table(&b, entry);
+	}
+	blobmsg_close_array(&b, arr);
+
+	ubus_send_reply(ctx, req, b.head);
+	blob_buf_free(&b);
+	return UBUS_STATUS_OK;
+}
+
+static int handle_get_profiles(struct ubus_context *ctx,
+			       struct ubus_object *obj,
+			       struct ubus_request_data *req,
+			       const char *method,
+			       struct blob_attr *msg)
+{
+	struct tc_ubus_ctx *tc = container_of(obj, struct tc_ubus_ctx, obj);
+	struct blob_buf b = {};
+
+	struct client_profile_summary summaries[PROFILE_MAX_CLIENTS];
+	int count = usage_profile_get_client_summaries(tc->profiler,
+						       summaries,
+						       PROFILE_MAX_CLIENTS);
+
+	blob_buf_init(&b, 0);
+	void *arr = blobmsg_open_array(&b, "profiles");
+
+	for (int i = 0; i < count; i++) {
+		struct client_profile_summary *s = &summaries[i];
+		char mac_str[18];
+		snprintf(mac_str, sizeof(mac_str),
+			 "%02x:%02x:%02x:%02x:%02x:%02x",
+			 s->mac[0], s->mac[1], s->mac[2],
+			 s->mac[3], s->mac[4], s->mac[5]);
+
+		void *entry = blobmsg_open_table(&b, NULL);
+		blobmsg_add_string(&b, "mac", mac_str);
+		blobmsg_add_u64(&b, "bytes_current", s->bytes_current_hour);
+		blobmsg_add_u64(&b, "bytes_baseline", s->bytes_baseline_avg);
+		blobmsg_add_u32(&b, "flows_current", s->flows_current_hour);
+		blobmsg_add_u32(&b, "flows_baseline", s->flows_baseline_avg);
+		blobmsg_add_u32(&b, "anomaly_count", s->anomaly_count);
+		blobmsg_add_u8(&b, "is_anomalous", s->is_anomalous);
+
+		void *dist = blobmsg_open_table(&b, "class_dist");
+		for (int c = 0; c < CLASSIFICATION_LABELS; c++) {
+			if (s->class_dist[c] > 0)
+				blobmsg_add_u32(&b, traffic_class_names[c],
+						s->class_dist[c]);
+		}
+		blobmsg_close_table(&b, dist);
+
+		blobmsg_close_table(&b, entry);
+	}
+	blobmsg_close_array(&b, arr);
+
+	ubus_send_reply(ctx, req, b.head);
+	blob_buf_free(&b);
+	return UBUS_STATUS_OK;
+}
+
 static const struct ubus_method tc_methods[] = {
 	UBUS_METHOD_NOARG("get_flows", handle_get_flows),
 	UBUS_METHOD_NOARG("get_clients", handle_get_clients),
 	UBUS_METHOD_NOARG("get_stats", handle_get_stats),
+	UBUS_METHOD_NOARG("get_anomalies", handle_get_anomalies),
+	UBUS_METHOD_NOARG("get_profiles", handle_get_profiles),
 	UBUS_METHOD_NOARG("status", handle_status),
 };
 

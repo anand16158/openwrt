@@ -47,6 +47,7 @@ define Build/Compile
 		$(if $(wildcard $(PKG_BUILD_DIR)/tc_model_xgb.c),$(PKG_BUILD_DIR)/tc_model_xgb.c,$(PKG_BUILD_DIR)/tc_model_stub.c) \
 		$(PKG_BUILD_DIR)/qos_manager.c \
 		$(PKG_BUILD_DIR)/device_fingerprint.c \
+		$(PKG_BUILD_DIR)/usage_profile.c \
 		$(PKG_BUILD_DIR)/telemetry.c \
 		$(PKG_BUILD_DIR)/ubus_api.c \
 		$(PKG_BUILD_DIR)/sta_tracker.c \

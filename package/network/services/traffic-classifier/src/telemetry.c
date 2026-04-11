@@ -14,6 +14,7 @@ struct telemetry_ctx {
 	struct flow_table *ft;
 	struct sta_tracker *sta;
 	struct device_fp_ctx *devfp;
+	struct usage_profile_ctx *profiler;
 	struct ubus_context *ubus;
 	time_t start_time;
 	uint32_t export_seq;
@@ -23,6 +24,7 @@ struct telemetry_ctx *telemetry_init(const struct telemetry_config *cfg,
 				     struct flow_table *ft,
 				     struct sta_tracker *sta,
 				     struct device_fp_ctx *devfp,
+				     struct usage_profile_ctx *profiler,
 				     struct ubus_context *ubus)
 {
 	struct telemetry_ctx *ctx = calloc(1, sizeof(*ctx));
@@ -33,6 +35,7 @@ struct telemetry_ctx *telemetry_init(const struct telemetry_config *cfg,
 	ctx->ft = ft;
 	ctx->sta = sta;
 	ctx->devfp = devfp;
+	ctx->profiler = profiler;
 	ctx->ubus = ubus;
 	ctx->start_time = time(NULL);
 
@@ -208,6 +211,37 @@ static char *build_json(struct telemetry_ctx *ctx)
 		blobmsg_close_table(&b, client);
 	}
 	blobmsg_close_array(&b, arr);
+
+	/* Anomalies */
+	if (ctx->profiler) {
+		struct anomaly_event events[ANOMALY_RING_SIZE];
+		int acount = usage_profile_get_anomalies(ctx->profiler,
+							 events,
+							 ANOMALY_RING_SIZE);
+		blobmsg_add_u32(&b, "anomaly_count", acount);
+
+		void *anarr = blobmsg_open_array(&b, "anomalies");
+		for (int i = 0; i < acount; i++) {
+			struct anomaly_event *ev = &events[i];
+			char mac_str[18];
+			snprintf(mac_str, sizeof(mac_str),
+				 "%02x:%02x:%02x:%02x:%02x:%02x",
+				 ev->mac[0], ev->mac[1], ev->mac[2],
+				 ev->mac[3], ev->mac[4], ev->mac[5]);
+
+			void *aentry = blobmsg_open_table(&b, NULL);
+			blobmsg_add_string(&b, "mac", mac_str);
+			blobmsg_add_string(&b, "type",
+					   anomaly_type_names[ev->type]);
+			blobmsg_add_u64(&b, "timestamp",
+					(uint64_t)ev->timestamp);
+			blobmsg_add_string(&b, "detail", ev->detail);
+			blobmsg_add_u32(&b, "severity",
+					(uint32_t)(ev->severity * 100));
+			blobmsg_close_table(&b, aentry);
+		}
+		blobmsg_close_array(&b, anarr);
+	}
 
 	char *json = blobmsg_format_json(b.head, true);
 	blob_buf_free(&b);

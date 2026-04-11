@@ -33,5 +33,13 @@
 			"type": "view",
 			"path": "traffic-classifier/flows"
 		}
+	},
+	"admin/network/traffic-classifier/anomalies": {
+		"title": "Anomalies",
+		"order": 4,
+		"action": {
+			"type": "view",
+			"path": "traffic-classifier/anomalies"
+		}
 	}
 }

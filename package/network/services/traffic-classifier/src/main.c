@@ -18,6 +18,7 @@
 #include "qos_manager.h"
 #include "telemetry.h"
 #include "device_fingerprint.h"
+#include "usage_profile.h"
 #include "ubus_api.h"
 
 #define DEFAULT_INTERFACE    "br-lan"
@@ -27,6 +28,7 @@
 #define EXPIRE_INTERVAL_MS   10000
 #define STA_REFRESH_MS       15000
 #define QOS_UPDATE_MS        10000
+#define PROFILE_TICK_MS      60000
 
 struct tc_daemon {
 	struct flow_table *ft;
@@ -37,6 +39,7 @@ struct tc_daemon {
 	struct qos_manager *qos;
 	struct telemetry_ctx *telem;
 	struct device_fp_ctx *devfp;
+	struct usage_profile_ctx *profiler;
 	struct tc_ubus_ctx ubus_ctx;
 
 	struct uloop_fd capture_fd;
@@ -45,6 +48,7 @@ struct tc_daemon {
 	struct uloop_timeout sta_timer;
 	struct uloop_timeout qos_timer;
 	struct uloop_timeout telem_timer;
+	struct uloop_timeout profile_timer;
 
 	int telem_interval_ms;
 };
@@ -63,6 +67,8 @@ static int classify_flow_cb(struct flow_entry *entry, void *ctx)
 	classifier_classify_flow(d->cls, entry);
 	if (d->devfp)
 		device_fp_analyze_flow(d->devfp, entry);
+	if (d->profiler)
+		usage_profile_update(d->profiler, entry);
 	return 0;
 }
 
@@ -94,6 +100,14 @@ static void qos_timer_cb(struct uloop_timeout *t)
 	if (d->qos && qos_manager_enabled(d->qos))
 		qos_manager_update(d->qos, d->ft);
 	uloop_timeout_set(t, QOS_UPDATE_MS);
+}
+
+static void profile_timer_cb(struct uloop_timeout *t)
+{
+	struct tc_daemon *d = container_of(t, struct tc_daemon, profile_timer);
+	if (d->profiler)
+		usage_profile_tick(d->profiler);
+	uloop_timeout_set(t, PROFILE_TICK_MS);
 }
 
 static void telem_timer_cb(struct uloop_timeout *t)
@@ -192,6 +206,7 @@ int main(int argc, char **argv)
 	}
 
 	d->devfp = device_fp_init(d->dc);
+	d->profiler = usage_profile_init();
 
 	d->qos = qos_manager_init(qos_enabled);
 	if (qos_enabled && !d->qos) {
@@ -206,7 +221,8 @@ int main(int argc, char **argv)
 		};
 		snprintf(tcfg.file_path, sizeof(tcfg.file_path),
 			 "%s", telem_path);
-		d->telem = telemetry_init(&tcfg, d->ft, d->sta, d->devfp, ubus);
+		d->telem = telemetry_init(&tcfg, d->ft, d->sta, d->devfp,
+					  d->profiler, ubus);
 		d->telem_interval_ms = telem_interval * 1000;
 	}
 
@@ -215,6 +231,7 @@ int main(int argc, char **argv)
 	d->ubus_ctx.classifier = d->cls;
 	d->ubus_ctx.sta = d->sta;
 	d->ubus_ctx.devfp = d->devfp;
+	d->ubus_ctx.profiler = d->profiler;
 
 	if (tc_ubus_init(&d->ubus_ctx) != 0) {
 		syslog(LOG_ERR, "failed to register ubus object");
@@ -247,6 +264,13 @@ int main(int argc, char **argv)
 		       telem_interval, telem_path);
 	}
 
+	if (d->profiler) {
+		d->profile_timer.cb = profile_timer_cb;
+		uloop_timeout_set(&d->profile_timer, PROFILE_TICK_MS);
+		syslog(LOG_INFO, "usage_profile: anomaly detection enabled (tick=%ds)",
+		       PROFILE_TICK_MS / 1000);
+	}
+
 	sta_tracker_refresh(d->sta);
 
 	syslog(LOG_INFO, "daemon ready, entering main loop");
@@ -255,6 +279,7 @@ int main(int argc, char **argv)
 	tc_ubus_cleanup(&d->ubus_ctx);
 	telemetry_destroy(d->telem);
 	qos_manager_destroy(d->qos);
+	usage_profile_destroy(d->profiler);
 	device_fp_destroy(d->devfp);
 	capture_destroy(d->cap);
 	classifier_destroy(d->cls);

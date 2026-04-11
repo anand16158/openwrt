@@ -6,6 +6,7 @@
 #include "classifier.h"
 #include "sta_tracker.h"
 #include "device_fingerprint.h"
+#include "usage_profile.h"
 
 struct tc_ubus_ctx {
 	struct ubus_context *ubus;
@@ -14,6 +15,7 @@ struct tc_ubus_ctx {
 	struct classifier_ctx *classifier;
 	struct sta_tracker *sta;
 	struct device_fp_ctx *devfp;
+	struct usage_profile_ctx *profiler;
 };
 
 int tc_ubus_init(struct tc_ubus_ctx *ctx);

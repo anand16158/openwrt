@@ -22,6 +22,12 @@ var callGetClients = rpc.declare({
 	expect: {}
 });
 
+var callGetAnomalies = rpc.declare({
+	object: 'traffic-classifier',
+	method: 'get_anomalies',
+	expect: {}
+});
+
 var classColors = {
 	'unknown':  '#9e9e9e',
 	'video':    '#e53935',
@@ -275,12 +281,87 @@ function renderDeviceDistribution(clients) {
 	]);
 }
 
+function renderAnomalySummary(anomalyData) {
+	var total = anomalyData ? (anomalyData.total || 0) : 0;
+	var anomalies = (anomalyData && anomalyData.anomalies) ? anomalyData.anomalies : [];
+
+	if (total === 0)
+		return E('div', { 'class': 'cbi-section' }, [
+			E('h3', {}, 'Anomaly Status'),
+			E('div', {
+				'style': 'text-align:center;padding:20px;background:#e8f5e9;' +
+					'border-radius:6px;border:1px solid #c8e6c9'
+			}, [
+				E('span', { 'style': 'font-size:24px;color:#2e7d32;font-weight:bold' },
+					'All Clear'),
+				E('div', { 'style': 'font-size:12px;color:#666;margin-top:4px' },
+					'No anomalies detected')
+			])
+		]);
+
+	var recent = anomalies.slice(0, 3);
+	var items = [];
+	for (var i = 0; i < recent.length; i++) {
+		var a = recent[i];
+		var sevColor = a.severity >= 70 ? '#e53935' : (a.severity >= 40 ? '#fb8c00' : '#43a047');
+		items.push(E('div', {
+			'style': 'padding:6px 10px;border-left:3px solid ' + sevColor +
+				';margin-bottom:6px;background:#fafafa;border-radius:0 4px 4px 0;font-size:12px'
+		}, [
+			E('div', { 'style': 'display:flex;justify-content:space-between' }, [
+				E('strong', {}, (a.type || '').replace(/_/g, ' ')),
+				E('span', { 'style': 'font-family:monospace;color:#999' }, a.mac || '')
+			]),
+			E('div', { 'style': 'color:#666;margin-top:2px' }, a.detail || '')
+		]));
+	}
+
+	return E('div', { 'class': 'cbi-section' }, [
+		E('h3', {}, [
+			'Anomalies ',
+			E('span', {
+				'style': 'display:inline-block;padding:1px 8px;border-radius:10px;' +
+					'background:#e53935;color:#fff;font-size:12px;font-weight:bold;' +
+					'vertical-align:middle'
+			}, String(total))
+		]),
+		E('div', {}, items),
+		total > 3 ? E('div', { 'style': 'text-align:right;font-size:12px;margin-top:4px' }, [
+			E('a', { 'href': '#' }, 'View all →')
+		]) : E('span')
+	]);
+}
+
+function buildOverviewContent(status, stats, clients, anomalyData) {
+	return [
+		E('h2', {}, 'Traffic Classifier'),
+		E('div', { 'style': 'display:flex;gap:16px;flex-wrap:wrap' }, [
+			E('div', { 'style': 'flex:1;min-width:300px' }, [
+				renderStatusCard(status)
+			]),
+			E('div', { 'style': 'flex:1;min-width:300px' }, [
+				renderDonutChart(stats)
+			])
+		]),
+		E('div', { 'style': 'display:flex;gap:16px;flex-wrap:wrap' }, [
+			E('div', { 'style': 'flex:1;min-width:300px' }, [
+				renderClassificationBars(stats)
+			]),
+			E('div', { 'style': 'flex:1;min-width:300px' }, [
+				renderDeviceDistribution(clients)
+			])
+		]),
+		renderAnomalySummary(anomalyData)
+	];
+}
+
 return view.extend({
 	load: function() {
 		return Promise.all([
 			callStatus(),
 			callGetStats(),
-			callGetClients()
+			callGetClients(),
+			callGetAnomalies()
 		]);
 	},
 
@@ -288,54 +369,19 @@ return view.extend({
 		var status = data[0] || {};
 		var stats = data[1] || {};
 		var clients = data[2] || {};
+		var anomalyData = data[3] || {};
 
-		var view = E('div', {}, [
-			E('h2', {}, 'Traffic Classifier'),
-			E('div', { 'style': 'display:flex;gap:16px;flex-wrap:wrap' }, [
-				E('div', { 'style': 'flex:1;min-width:300px' }, [
-					renderStatusCard(status)
-				]),
-				E('div', { 'style': 'flex:1;min-width:300px' }, [
-					renderDonutChart(stats)
-				])
-			]),
-			E('div', { 'style': 'display:flex;gap:16px;flex-wrap:wrap' }, [
-				E('div', { 'style': 'flex:1;min-width:300px' }, [
-					renderClassificationBars(stats)
-				]),
-				E('div', { 'style': 'flex:1;min-width:300px' }, [
-					renderDeviceDistribution(clients)
-				])
-			])
-		]);
+		var view = E('div', {},
+			buildOverviewContent(status, stats, clients, anomalyData));
 
 		poll.add(L.bind(function() {
-			return Promise.all([callStatus(), callGetStats(), callGetClients()]).then(L.bind(function(res) {
-				var s = res[0] || {};
-				var st = res[1] || {};
-				var cl = res[2] || {};
+			return Promise.all([
+				callStatus(), callGetStats(), callGetClients(), callGetAnomalies()
+			]).then(L.bind(function(res) {
 				var root = document.querySelector('[data-page="traffic-classifier-overview"]');
 				if (!root) return;
-
-				dom.content(root, [
-					E('h2', {}, 'Traffic Classifier'),
-					E('div', { 'style': 'display:flex;gap:16px;flex-wrap:wrap' }, [
-						E('div', { 'style': 'flex:1;min-width:300px' }, [
-							renderStatusCard(s)
-						]),
-						E('div', { 'style': 'flex:1;min-width:300px' }, [
-							renderDonutChart(st)
-						])
-					]),
-					E('div', { 'style': 'display:flex;gap:16px;flex-wrap:wrap' }, [
-						E('div', { 'style': 'flex:1;min-width:300px' }, [
-							renderClassificationBars(st)
-						]),
-						E('div', { 'style': 'flex:1;min-width:300px' }, [
-							renderDeviceDistribution(cl)
-						])
-					])
-				]);
+				dom.content(root, buildOverviewContent(
+					res[0] || {}, res[1] || {}, res[2] || {}, res[3] || {}));
 			}, this));
 		}, this), 5);
 
