@@ -1,0 +1,56 @@
+#!/bin/sh /etc/rc.common
+
+START=95
+STOP=10
+
+USE_PROCD=1
+PROG=/usr/sbin/traffic-classifier
+
+start_service() {
+	local interface model max_flows qos_enabled
+	local telemetry_enabled telemetry_interval telemetry_path
+	local data_capture_enabled data_capture_path
+
+	config_load traffic-classifier
+	config_get interface daemon interface 'br-lan'
+	config_get model daemon model '/etc/traffic-classifier/model.json'
+	config_get max_flows daemon max_flows '8192'
+	config_get qos_enabled daemon qos_enabled '0'
+	config_get telemetry_enabled daemon telemetry_enabled '0'
+	config_get telemetry_interval daemon telemetry_interval '60'
+	config_get telemetry_path daemon telemetry_path '/tmp/traffic-classifier-telemetry.json'
+	config_get data_capture_enabled daemon data_capture_enabled '0'
+	config_get data_capture_path daemon data_capture_path '/tmp/tc-training-data.csv'
+
+	procd_open_instance
+	procd_set_param command "$PROG" \
+		-i "$interface" \
+		-m "$model" \
+		-n "$max_flows"
+
+	[ "$qos_enabled" = "1" ] && procd_append_param command -q
+
+	[ "$telemetry_enabled" = "1" ] && {
+		procd_append_param command -t "$telemetry_interval"
+		procd_append_param command -T "$telemetry_path"
+	}
+
+	[ "$data_capture_enabled" = "1" ] && {
+		procd_append_param command -C "$data_capture_path"
+	}
+
+	procd_set_param respawn
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_set_param file /etc/config/traffic-classifier
+	procd_close_instance
+}
+
+service_triggers() {
+	procd_add_reload_trigger "traffic-classifier"
+}
+
+reload_service() {
+	stop
+	start
+}
