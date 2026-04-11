@@ -153,15 +153,15 @@ static void process_packet(struct capture_ctx *ctx,
 
 		if (key.proto == IPPROTO_TCP && l4_len >= sizeof(struct tcphdr)) {
 			const struct tcphdr *th = (const struct tcphdr *)l4;
-			key.src_port = ntohs(th->source);
-			key.dst_port = ntohs(th->dest);
+			key.src_port = ntohs(th->th_sport);
+			key.dst_port = ntohs(th->th_dport);
 			tcp_flags = ((uint8_t *)th)[13];
 			l4_src_port = key.src_port;
 			l4_dst_port = key.dst_port;
 		} else if (key.proto == IPPROTO_UDP && l4_len >= sizeof(struct udphdr)) {
 			const struct udphdr *uh = (const struct udphdr *)l4;
-			key.src_port = ntohs(uh->source);
-			key.dst_port = ntohs(uh->dest);
+			key.src_port = ntohs(uh->uh_sport);
+			key.dst_port = ntohs(uh->uh_dport);
 			l4_src_port = key.src_port;
 			l4_dst_port = key.dst_port;
 		}
@@ -183,15 +183,15 @@ static void process_packet(struct capture_ctx *ctx,
 
 		if (key.proto == IPPROTO_TCP && l4_len >= sizeof(struct tcphdr)) {
 			const struct tcphdr *th = (const struct tcphdr *)l4;
-			key.src_port = ntohs(th->source);
-			key.dst_port = ntohs(th->dest);
+			key.src_port = ntohs(th->th_sport);
+			key.dst_port = ntohs(th->th_dport);
 			tcp_flags = ((uint8_t *)th)[13];
 			l4_src_port = key.src_port;
 			l4_dst_port = key.dst_port;
 		} else if (key.proto == IPPROTO_UDP && l4_len >= sizeof(struct udphdr)) {
 			const struct udphdr *uh = (const struct udphdr *)l4;
-			key.src_port = ntohs(uh->source);
-			key.dst_port = ntohs(uh->dest);
+			key.src_port = ntohs(uh->uh_sport);
+			key.dst_port = ntohs(uh->uh_dport);
 			l4_src_port = key.src_port;
 			l4_dst_port = key.dst_port;
 		}

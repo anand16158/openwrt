@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <syslog.h>
+#include <stdio.h>
 #include <libubox/blobmsg.h>
 #include <libubox/blobmsg_json.h>
 
