@@ -16,11 +16,22 @@ Usage:
     # Train on real data captured from the router:
     python build_model.py --input real_data.csv
 
+    # Train on MIRAGE-2019 JSON biflow data:
+    python build_model.py --mirage-dir ./MIRAGE-2019/
+
+    # Combine MIRAGE-2019 + synthetic data:
+    python build_model.py --mirage-dir ./MIRAGE-2019/ --augment
+
     # Combine real + synthetic data:
     python build_model.py --input real_data.csv --augment
 
-    # The script writes tc_model_xgb.c into ../package/.../src/
-    # which replaces tc_model_stub.c at link time.
+    # The script writes tc_model_xgb.c next to tc_model.h in either:
+    #   ../traffic-classifier/src/   (openwrt-ai-stack feed repo)
+    #   ../package/network/services/traffic-classifier/src/   (full OpenWrt tree)
+    # By default, an existing tc_model_xgb.c
+    # is copied to tc_model_xgb_legacy.c before export so the previous model
+    # stays in-tree (legacy is not compiled — only tc_model_xgb.c is).
+    # Skip that with: python build_model.py --no-backup
 """
 
 import argparse
@@ -29,12 +40,21 @@ import json
 import math
 import os
 import random
+import shutil
 import sys
 
 import numpy as np
+import pandas as pd
 import xgboost as xgb
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, accuracy_score, f1_score
+
+try:
+    from convert_mirage_json import process_directory as mirage_process_directory
+    from convert_mirage_json import LABEL_MAP as MIRAGE_LABEL_MAP
+    HAS_MIRAGE_CONVERTER = True
+except ImportError:
+    HAS_MIRAGE_CONVERTER = False
 
 FEATURE_NAMES = [
     "flow_duration_sec", "total_fwd_packets", "total_bwd_packets",
@@ -54,10 +74,26 @@ CLASS_NAMES = [
 N_FEATURES = 20
 N_CLASSES = 8
 
-SRC_DIR = os.path.join(
-    os.path.dirname(__file__), "..",
-    "package", "network", "services", "traffic-classifier", "src"
-)
+
+def _find_classifier_src_dir():
+    """Resolve directory containing tc_model.h (feed layout vs full OpenWrt package path)."""
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    candidates = [
+        os.path.join(root, "traffic-classifier", "src"),
+        os.path.join(
+            root, "package", "network", "services", "traffic-classifier", "src"
+        ),
+    ]
+    for c in candidates:
+        if os.path.isfile(os.path.join(c, "tc_model.h")):
+            return c
+    for c in candidates:
+        if os.path.isdir(c):
+            return c
+    return candidates[0]
+
+
+SRC_DIR = _find_classifier_src_dir()
 
 PROFILES = {
     "unknown": {
@@ -210,27 +246,69 @@ def generate_data(n_samples=10000, seed=42):
 
 # ── Step 2: Train XGBoost ────────────────────────────────────────────
 
+def _booster_gain_importance_normalized(booster, n_features):
+    """Map booster f0..f{n-1} gain scores to a length-n vector (sum ~ 1)."""
+    score = booster.get_score(importance_type="gain") or {}
+    arr = np.zeros(n_features, dtype=np.float64)
+    for k, v in score.items():
+        if isinstance(k, str) and k.startswith("f"):
+            idx = int(k[1:])
+            if 0 <= idx < n_features:
+                arr[idx] = float(v)
+    s = arr.sum()
+    if s > 0:
+        arr /= s
+    return arr
+
+
+class _XGBBoosterModel:
+    """Wraps native Booster so export_to_c() and save_model() stay unchanged."""
+
+    __slots__ = ("_booster",)
+
+    def __init__(self, booster):
+        self._booster = booster
+
+    def get_booster(self):
+        return self._booster
+
+    def save_model(self, path):
+        self._booster.save_model(path)
+
+    @property
+    def feature_importances_(self):
+        return _booster_gain_importance_normalized(self._booster, N_FEATURES)
+
+
 def train_model(X, y):
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
     )
 
-    model = xgb.XGBClassifier(
-        n_estimators=100,
-        max_depth=6,
-        learning_rate=0.1,
-        objective="multi:softprob",
-        num_class=N_CLASSES,
-        eval_metric="mlogloss",
-        use_label_encoder=False,
-        tree_method="hist",
-        random_state=42,
-        n_jobs=-1,
+    # Native xgb.train: labels may be any subset of 0..N_CLASSES-1 (e.g. MIRAGE 1,2,3,5,7).
+    # sklearn XGBClassifier rejects non-consecutive class ids even when num_class=8.
+    params = {
+        "max_depth": 6,
+        "learning_rate": 0.1,
+        "objective": "multi:softprob",
+        "num_class": N_CLASSES,
+        "eval_metric": "mlogloss",
+        "tree_method": "hist",
+        "seed": 42,
+        "verbosity": 0,
+    }
+    dtrain = xgb.DMatrix(X_train, label=y_train)
+    dtest = xgb.DMatrix(X_test, label=y_test)
+    booster = xgb.train(
+        params,
+        dtrain,
+        num_boost_round=100,
+        evals=[(dtest, "eval")],
     )
+    model = _XGBBoosterModel(booster)
 
-    model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
-
-    y_pred = model.predict(X_test)
+    prob = booster.predict(dtest).reshape(-1, N_CLASSES)
+    y_pred = np.argmax(prob, axis=1).astype(np.int32)
     acc = accuracy_score(y_test, y_pred)
     f1 = f1_score(y_test, y_pred, average="weighted", zero_division=0)
 
@@ -365,23 +443,57 @@ def export_to_c(model, output_path):
 
 # ── Load real data from CSV ───────────────────────────────────────────
 
-def load_real_data(csv_path):
-    """Load training data exported by the data_collect module."""
-    print(f"  Loading real data from {csv_path}...")
+def _parse_class_label(cell):
+    """Parse label_id cell; pandas CSV often writes integers as '1.0'."""
+    if cell is None:
+        return -1
+    s = str(cell).strip()
+    if not s:
+        return -1
+    try:
+        return int(float(s))
+    except ValueError:
+        return -1
+
+
+def load_real_data_csv_positional(csv_path):
+    """Fallback: positional columns (first 20 = features)."""
+    print(f"  Loading real data from {csv_path} (positional parser)...")
     X_list, y_list = [], []
     skipped = 0
 
-    with open(csv_path, "r") as f:
+    label_name_map = {name: i for i, name in enumerate(CLASS_NAMES)}
+
+    with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
         reader = csv.reader(f)
         header = next(reader)
 
+        label_id_col = None
+        label_col = None
+        if "label_id" in header:
+            label_id_col = header.index("label_id")
+        if "label" in header:
+            label_col = header.index("label")
+
         for row in reader:
-            if len(row) < N_FEATURES + 1:
+            need_cols = N_FEATURES + 1
+            if label_id_col is not None:
+                need_cols = max(need_cols, label_id_col + 1)
+            if label_col is not None:
+                need_cols = max(need_cols, label_col + 1)
+            if len(row) < need_cols:
                 skipped += 1
                 continue
             try:
                 features = [float(row[i]) for i in range(N_FEATURES)]
-                label = int(row[N_FEATURES])
+                label = -1
+                if label_id_col is not None:
+                    label = _parse_class_label(row[label_id_col])
+                elif label_col is not None:
+                    label = label_name_map.get(row[label_col].strip(), -1)
+                else:
+                    label = _parse_class_label(row[N_FEATURES])
+
                 if 0 <= label < N_CLASSES:
                     X_list.append(features)
                     y_list.append(label)
@@ -396,6 +508,62 @@ def load_real_data(csv_path):
     return X, y
 
 
+def load_real_data(csv_path):
+    """Load training data from CSV (Kaggle/pandas, router export, or positional)."""
+    print(f"  Loading real data from {csv_path}...")
+    label_name_map = {name: i for i, name in enumerate(CLASS_NAMES)}
+
+    try:
+        df = pd.read_csv(csv_path, encoding="utf-8-sig", engine="python", sep=None)
+    except Exception as exc:
+        print(f"  Note: auto-detect delimiter failed ({exc}); using comma.")
+        df = pd.read_csv(csv_path, encoding="utf-8-sig")
+
+    df.columns = [str(c).strip() for c in df.columns]
+
+    if len(df.columns) == 1:
+        c0 = df.columns[0]
+        if isinstance(c0, str) and c0.count(",") >= N_FEATURES:
+            df = pd.read_csv(csv_path, encoding="utf-8-sig")
+
+    have_feats = all(name in df.columns for name in FEATURE_NAMES)
+    if not have_feats:
+        print("  Note: expected feature column names not found; trying positional CSV parse.")
+        return load_real_data_csv_positional(csv_path)
+
+    n = len(df)
+    X = (
+        df[FEATURE_NAMES]
+        .apply(pd.to_numeric, errors="coerce")
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(0.0)
+        .to_numpy(dtype=np.float32)
+    )
+
+    y = np.full(n, -1, dtype=np.int32)
+    if "label_id" in df.columns:
+        lid = pd.to_numeric(df["label_id"], errors="coerce").to_numpy(dtype=np.float64)
+        valid = ~np.isnan(lid)
+        y[valid] = np.rint(lid[valid]).astype(np.int64)
+    if "label" in df.columns:
+        y_names = (
+            df["label"]
+            .map(lambda s: label_name_map.get(str(s).strip(), -1))
+            .to_numpy(dtype=np.int32)
+        )
+        bad = (y < 0) | (y >= N_CLASSES)
+        y[bad] = y_names[bad]
+
+    mask = (y >= 0) & (y < N_CLASSES)
+    skipped = int(n - np.sum(mask))
+    X = X[mask]
+    y = y[mask]
+
+    print(f"  Parsed {n} data rows, {len(df.columns)} columns; "
+          f"kept {len(X)} rows ({skipped} skipped: bad/missing labels)")
+    return X, y
+
+
 # ── Main ─────────────────────────────────────────────────────────────
 
 def main():
@@ -407,15 +575,53 @@ def main():
     parser.add_argument("--augment", "-a", action="store_true",
                         help="When using --input, also add synthetic data "
                              "to fill gaps in under-represented classes")
+    parser.add_argument("--mirage-dir", "-m", type=str, default=None,
+                        help="Path to MIRAGE-2019 dataset directory "
+                             "(JSON biflow files, searched recursively)")
     parser.add_argument("--samples", "-n", type=int, default=10000,
                         help="Number of synthetic samples (default: 10000)")
+    parser.add_argument("--no-backup", action="store_true",
+                        help="Do not copy existing tc_model_xgb.c to "
+                             "tc_model_xgb_legacy.c before export")
     args = parser.parse_args()
 
     print("=" * 60)
     print("  Traffic Classifier — ML Model Builder")
     print("=" * 60)
+    if not os.path.isfile(os.path.join(SRC_DIR, "tc_model.h")):
+        print(f"\n  Warning: tc_model.h not found under:\n    {SRC_DIR}\n"
+              "  Export path may be wrong; use an openwrt-ai-stack or OpenWrt "
+              "tree that contains traffic-classifier/src/tc_model.h.", file=sys.stderr)
 
-    if args.input:
+    if args.mirage_dir:
+        if not HAS_MIRAGE_CONVERTER:
+            print("Error: convert_mirage_json.py not found. "
+                  "Make sure it is in the same directory.", file=sys.stderr)
+            sys.exit(1)
+        print(f"\n[1/3] Processing MIRAGE-2019 JSON from {args.mirage_dir}...")
+        mirage_results = mirage_process_directory(args.mirage_dir)
+        if not mirage_results:
+            print("Error: No flows extracted from MIRAGE-2019 data.", file=sys.stderr)
+            sys.exit(1)
+        X_mirage = np.array([r[0] for r in mirage_results], dtype=np.float32)
+        y_mirage = np.array([MIRAGE_LABEL_MAP.get(r[1], 0) for r in mirage_results], dtype=np.int32)
+        X, y = X_mirage, y_mirage
+
+        if args.input:
+            print(f"\n  Also loading CSV data from {args.input}...")
+            X_csv, y_csv = load_real_data(args.input)
+            X = np.vstack([X, X_csv])
+            y = np.concatenate([y, y_csv])
+            print(f"  Combined MIRAGE + CSV: {len(X)} flows")
+
+        if args.augment:
+            print(f"\n  Augmenting with {args.samples} synthetic flows...")
+            X_synth, y_synth = generate_data(args.samples)
+            X = np.vstack([X, X_synth])
+            y = np.concatenate([y, y_synth])
+            print(f"  Combined dataset: {len(X)} flows")
+
+    elif args.input:
         print(f"\n[1/3] Loading real training data...")
         X, y = load_real_data(args.input)
 
@@ -429,6 +635,12 @@ def main():
         n_samples = args.samples
         print(f"\n[1/3] Generating {n_samples} synthetic training flows...")
         X, y = generate_data(n_samples)
+
+    if len(X) == 0:
+        print("\nError: No training rows after loading CSV.", file=sys.stderr)
+        print("  Check: label_id must be 0–7, or 'label' must match CLASS_NAMES.", file=sys.stderr)
+        print("  If you edited openwrt-anand on another PC, copy the latest build_model.py.", file=sys.stderr)
+        sys.exit(1)
 
     unique, counts = np.unique(y, return_counts=True)
     for cls_id, count in zip(unique, counts):
@@ -446,13 +658,17 @@ def main():
     print(f"\nSaved model: {model_path}")
 
     c_output = os.path.abspath(os.path.join(SRC_DIR, "tc_model_xgb.c"))
+    if not args.no_backup and os.path.isfile(c_output) and os.path.getsize(c_output) > 0:
+        legacy_path = os.path.abspath(os.path.join(SRC_DIR, "tc_model_xgb_legacy.c"))
+        shutil.copy2(c_output, legacy_path)
+        print(f"\n  Backup: previous tc_model_xgb.c → tc_model_xgb_legacy.c")
     print(f"\n[3/3] Exporting model to C → {c_output}")
     export_to_c(model, c_output)
 
     print(f"\n{'='*60}")
     print("  Done! The model has been exported to tc_model_xgb.c")
-    if args.input:
-        print(f"  Trained on: {len(X)} real+synthetic flows")
+    if args.mirage_dir or args.input:
+        print(f"  Trained on: {len(X)} flows")
     print(f"{'='*60}")
 
 
