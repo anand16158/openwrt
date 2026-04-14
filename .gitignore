@@ -7,3 +7,4 @@ staging_dir/
 tmp/
 .config
 .config.old
+/training/kaggle_output/
